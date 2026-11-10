@@ -1,0 +1,5 @@
+@"
+.env
+.env.*
+!.env.example
+"@ | Set-Content -Encoding utf8 .gitignore
