@@ -1,5 +1,9 @@
-@"
 .env
 .env.*
 !.env.example
-"@ | Set-Content -Encoding utf8 .gitignore
+node_modules/
+uploads/
+.venv/
+*.pem
+*.log
+.DS_Store
