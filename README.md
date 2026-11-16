@@ -1,167 +1,110 @@
 # VS 밸런스 게임
 
-회원가입 없이 두 선택지 중 하나에 투표하고 결과와 의견을 나누는 소규모 AWS 과제용 웹서비스입니다. 기능을 늘리기보다 **세 가지 사용자 흐름과 요청량에 맞는 운영**에 집중합니다.
+회원가입 없이 A/B 중 하나를 선택하고, 다른 사용자의 투표 결과와 댓글을 확인하는 익명 웹서비스입니다.
 
-1. **주제 생성·조회:** 제목과 A/B 선택지 입력, 선택적으로 이미지 첨부
-2. **익명 투표·결과:** 브라우저별 중복 투표 제한, 득표수·비율 표시
-3. **댓글 작성·조회:** 주제별 익명 댓글
+## 1. 서비스 소개
 
-로그인, 검색, 인기순 정렬, 수정·삭제, 관리자 기능은 구현 범위에서 제외했습니다. 목록은 최근 등록 순으로 12개, 댓글은 20개씩 불러옵니다. 브라우저 쿠키 삭제·다른 기기 사용까지 엄격한 1인 1표를 보장하지는 않습니다.
+| 기능 | 내용 |
+| --- | --- |
+| VS 주제 생성 | 제목과 두 선택지(A/B)를 등록 |
+| 익명 투표 | 브라우저별 식별 쿠키로 동일 주제의 중복 투표 제한 |
+| 결과 조회 | 선택지별 득표수·비율 확인 |
+| 댓글 | 주제별 익명 댓글 작성·조회 |
+| 이미지 첨부 | 선택지 이미지 업로드 및 표시(Amazon S3) |
 
-## 구성
+> 익명 식별 쿠키는 유효기간을 1년으로 설정했였습니다. 쿠키를 삭제하거나 브라우저를 변경하면 재투표가 가능하다는 한계가 있지만, 번거로운 추가 조작이 필요하므로 무분별한 중복 투표·댓글입력을 막을 수 있다 판단하였습니다.
+
+## 2. AWS 구성도
 
 ```mermaid
-flowchart LR
-  U[브라우저] -->|HTTP 80| W[Nginx + HTML/CSS/JS]
-  subgraph EC2[EC2 / Docker Compose]
-    W -->|내부 API| A[Node.js / Express]
-    A --> D[(MySQL 8.0)]
-    D --- V[(mysql_data 볼륨)]
-    A --- L[(로컬 이미지 볼륨)]
-  end
-  A -. STORAGE_DRIVER=s3 .-> S[(비공개 S3 버킷)]
+flowchart TD
+    U[사용자 브라우저] -->|HTTP :80| W
+    subgraph EC2[Amazon EC2 · Ubuntu / Docker Compose]
+        W[web · Nginx / 정적 프런트엔드] -->|/api| A[api · Node.js 백엔드]
+        A --> D[(db · MySQL 8.0)]
+        D --- V[(Docker Volume)]
+    end
+    A -->|IAM Role · 이미지 업로드/조회| S[(Amazon S3)]
+    G[GitHub] -.->|git pull| EC2
 ```
 
-외부 공개 포트는 웹 포트 하나입니다. API 3000·DB 3306은 호스트에 공개하지 않습니다. 기존 `topics`, `votes`, `comments` 스키마를 그대로 사용하며 마이그레이션은 필요하지 않습니다. 기존 Compose 프로젝트 이름과 경로를 유지해야 기존 DB 볼륨을 계속 사용합니다.
+| 구성 | 사용 이유 |
+| --- | --- |
+| **EC2** | Docker Compose 기반 웹서비스를 AWS 가상 서버에서 실행 |
+| **Docker Compose** | `web`·`api`·`db` 컨테이너를 통합 관리 |
+| **MySQL + Docker Volume** | 주제·투표·댓글 저장 및 컨테이너 재생성 시 데이터 유지 |
+| **S3 + IAM Role** | 실제 이미지 객체 저장 및 액세스 키 없이 접근 권한 부여 |
+| **GitHub** | 소스코드 이력 관리 및 EC2 배포 |
 
-## 실행
+**ELB, Auto Scaling 정의**
+**ELB(Elastic Load Balancing): 여러 서버에 들어오는 사용자 요청을 분산하여 특정 서버에 부하가 집중되는 것을 방지하고 서비스의 가용성을 높이는 AWS 서비스입니다.
+**Auto Scaling: CPU 사용률 등 설정된 지표와 정책에 따라 서버 수를 자동으로 늘리거나 줄여, 서비스 부하에 대응하고 자원 사용 및 운영 비용을 최적화하는 기술입니다.
 
-Docker Engine + Compose가 필요합니다. Windows에서는 Docker Desktop을 사용할 수 있습니다.
+**ELB·Auto Scaling 미적용:** 
+**서비스 규모 및 비용**: 단기간 운영하는 소규모 과제용 웹서비스로, 단일 EC2 인스턴스에서 서비스를 운영하는 것이 적절하다고 판단하였습니다. ELB와 Auto Scaling을 도입하면 추가적인 AWS 리소스와 운영 비용이 발생하므로 현재 규모에서는 효율성이 낮다고 판단하였습니다.
+**데이터베이스 구조**: MySQL 데이터를 EC2 내부 Docker Volume에 저장하고 있어, 수평 확장을 위해서는 RDS와 같은 공통 데이터베이스를 구축하거나 DB를 별도 서버로 분리하는 구조 변경이 필요합니다.
+**향후 확장 계획**: 실제 서비스 운영으로 가정하며 사용자 수와 트래픽이 증가한다면, 데이터베이스를 공통 저장소로 분리한 뒤 ALB를 통한 요청 분산과 EC2 Auto Scaling을 통한 서버 자동 증설을 검토할 계획입니다. 이를 통해 트래픽 증가에 대응하고 서비스 가용성과 운영 효율성 개선을 기대할 수 있습니다.
+
+## 3. 실행 및 배포
+
+**준비:** Git, Docker Engine·Docker Compose(로컬은 Docker Desktop 가능), 프로젝트 최상위 `.env` 파일.
 
 ```bash
-# 처음 실행할 때만. 기존 .env가 있으면 덮어쓰지 마세요.
+git clone https://github.com/hiallu60/vs-game.git
+cd vs-game
 cp .env.example .env
-```
+# .env에 MySQL 비밀번호, COOKIE_SECRET 등 환경변수 입력
 
-기존 DB의 네 가지 `MYSQL_*` 값은 그대로 유지하고 `.env.example`을 참고해 새 항목을 추가합니다. `COOKIE_SECRET`은 32자 이상의 임의 문자열로 설정하고 재시작해도 유지하세요. 바꾸면 기존 투표 쿠키가 무효화됩니다. Node.js가 있다면 다음으로 값을 만들 수 있습니다.
-
-```bash
-node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
 docker compose config -q
 docker compose up -d --build
 docker compose ps
 ```
 
-기본 접속 주소: **http://localhost** / EC2에서는 **http://EC2_PUBLIC_IP**. 80번 포트가 사용 중이면 `WEB_PORT=8080`으로 설정합니다. 현재 코드는 저장소에 구현된 상태이며 **이번 작업에서 실제 EC2 웹 배포는 실행하지 않았습니다.**
+- 로컬 접속: **http://localhost** (`WEB_PORT=80` 기준)
+- API 상태 확인: `curl http://localhost/api/health`
+- 컨테이너: `web`(Nginx, 호스트 80), `api`(Node.js, 내부 3000), `db`(MySQL, 내부 3306)
+- `.env`와 개인 키 등 비밀정보는 GitHub에 업로드하지 않습니다.
 
-| 환경변수 | 설명 |
-|---|---|
-| MYSQL_ROOT_PASSWORD | DB 초기 관리자 비밀번호 |
-| MYSQL_DATABASE / MYSQL_USER / MYSQL_PASSWORD | 기존 DB 이름·앱 계정·비밀번호 |
-| COOKIE_SECRET | 32자 이상 서명 비밀값, 운영 중 고정 |
-| COOKIE_SECURE | HTTP는 false, HTTPS 구성 후 true |
-| WEB_PORT | 기본 80 |
-| STORAGE_DRIVER | local 또는 s3, 기본 local |
-| AWS_REGION | 실제 S3 버킷 리전 |
-| S3_BUCKET | s3 모드의 비공개 버킷 이름 |
-
-MySQL 이미지의 초기 환경변수는 빈 볼륨에서만 DB·계정을 생성합니다. 기존 볼륨의 비밀번호는 `.env` 값만 바꿔도 변경되지 않습니다. `database/init.sql`도 빈 볼륨에서만 자동 실행됩니다. **`docker compose down -v`는 저장 데이터를 삭제하므로 사용하지 마세요.**
-
-## 이미지 저장
-
-기본 `local` 모드는 `uploads` 볼륨에 저장합니다. 파일 확장자가 아닌 실제 이미지 내용을 검사하고, 최대 5MB·2,500만 화소의 JPG/PNG/WebP만 받아 최대 1400px WebP로 다시 인코딩합니다. 주제 생성 중 오류가 나면 이미 저장된 파일을 정리합니다. DB에는 이미지 키만 저장합니다.
-
-AWS에서는 비공개 S3 버킷을 만들고 EC2 IAM Role에 아래 권한을 부여한 뒤 `STORAGE_DRIVER=s3`, `S3_BUCKET`, `AWS_REGION`을 설정합니다. 액세스 키를 소스에 넣지 않습니다. 조회에는 1시간 유효한 서명 URL을 사용하며, 만료된 이미지는 화면을 새로 불러오면 갱신됩니다. 브라우저가 S3에 직접 업로드하지 않으므로 별도 업로드 CORS 설정은 필요하지 않습니다.
-
-```json
-{
-  "Version": "2012-10-17",
-  "Statement": [{
-    "Effect": "Allow",
-    "Action": ["s3:PutObject", "s3:GetObject", "s3:DeleteObject"],
-    "Resource": "arn:aws:s3:::YOUR_BUCKET/images/*"
-  }]
-}
-```
-
-EC2 컨테이너에서 인스턴스 역할을 사용하려면 IMDSv2 접근이 가능해야 합니다. Docker 네트워크 환경에서는 EC2 메타데이터 응답 hop limit 2가 필요할 수 있습니다. 저장 모드를 바꾸면 기존 키의 저장소도 달라지므로 기존 이미지가 있다면 먼저 파일을 이전해야 합니다. S3 실제 연결은 아직 검증하지 않았습니다.
-
-## API
-
-| 메서드·경로 | 역할 |
-|---|---|
-| GET /api/health | API와 DB 연결 확인 |
-| GET /api/topics?before=ID | 주제 목록, next 커서 반환 |
-| POST /api/topics | multipart: title, option_a, option_b, 선택 image_a/image_b |
-| GET /api/topics/:id | 주제와 현재 브라우저의 투표 여부 |
-| POST /api/topics/:id/votes | JSON: choice = A 또는 B |
-| GET /api/topics/:id/results | 투표한 브라우저만 결과 조회 |
-| GET /api/topics/:id/comments?before=ID | 댓글 목록 |
-| POST /api/topics/:id/comments | JSON: content, 1~1000자 |
-
-익명 토큰은 HttpOnly·SameSite 쿠키에 서명해 저장하고 DB에는 SHA-256 해시를 저장합니다. DB의 `(topic_id, voter_token_hash)` 유일 제약으로 동시 중복 투표도 차단합니다. SQL 값은 바인딩하며 화면 출력은 HTML 이스케이프합니다. 주제 제목은 200자, 선택지는 각 255자까지입니다.
-
-## 요청량과 운영
-
-단일 EC2·단일 API·단일 DB를 전제로 합니다. API 연결 풀은 최대 10개이며 IP당 API 분당 300회, 쓰기 분당 30회로 제한합니다. 제한은 단일 API 프로세스 메모리에 보관되어 재시작하면 초기화됩니다. Nginx는 전달 IP를 재설정하며 API는 Nginx 한 단계를 신뢰합니다. API 포트를 외부에 직접 공개하지 마세요.
-
-Compose는 DB 512MB / API 384MB / 웹 64MB 메모리 상한, CPU 상한과 컨테이너당 로그 10MB × 3개를 설정합니다. 이 수치는 성능 보장값이 아닌 초기 운영 한도입니다. **현재 EC2는 RAM 약 908MB, 가용 메모리 약 196MB, 스왑 없음**으로 확인되어 전체 스택 빌드·운영 여유가 적습니다. 2GB 이상 RAM을 출발점으로 삼고 실제 측정 후 조정하세요. 인스턴스 크기나 AWS 설정은 이번 작업에서 변경하지 않았습니다.
+**AWS EC2 배포:** EC2(Ubuntu)에 Docker·Compose·Git을 설치하고, EC2에 기존 DB 비밀번호가 설정된 `.env` 및 S3 접근용 IAM Role을 준비합니다. EC2에서는 다음 명령어로 배포합니다.
 
 ```bash
-docker compose logs --tail=100 api web db
-docker stats --no-stream
+cd ~/vs-game
+git pull --ff-only origin main
+docker compose config -q
+docker compose up -d --build
+docker compose ps
 curl http://localhost/api/health
-# Node.js 24가 있는 곳에서: 동시 요청 5개, 총 50개의 목록 조회
-node backend/load-check.js
-# 다른 주소는 BASE_URL 환경변수로 지정
 ```
 
-요청 실패 수, 평균·p95 응답시간, CPU·메모리를 기록해 과제의 요청량 근거로 사용하세요. 현재 부하 시험 결과는 미측정입니다. 사용자가 증가하면 먼저 쿼리·자원 사용량을 확인하고 자원을 조정합니다. ELB·Auto Scaling은 현재 적용하지 않습니다. 여러 EC2로 확장하려면 공통 DB·S3·공통 제한 저장소를 준비한 후 검토합니다.
+- AWS 접속 주소: **`http://13.238.90.86`**
+- S3 사용 시: `STORAGE_DRIVER`, S3 버킷·리전 관련 설정을 백엔드 구현에 맞춰 지정합니다.
+- 기존 MySQL 볼륨 보호: **`docker compose down -v` 사용 주의** (DB 볼륨 삭제 가능)
 
-EC2 배포 시 SSH는 관리자 IP만 허용하고 웹 포트만 공개합니다. HTTPS는 별도 도메인·인증서 설정이 필요하며 이번 구현에는 포함되지 않습니다. DB 백업과 복구 시험도 실제 운영 전에 수행해야 합니다.
+## 4. 배포 환경 검증
 
-## 검증 결과
+EC2 퍼블릭 주소에서 실제 화면을 열고 아래 기능을 확인했습니다.
 
-```bash
-cd backend
-npm ci
-npm test
-npm audit --omit=dev
-```
+| 기능 | 확인한 정상 동작 | 실패·경계 사례 결과 |
+| --- | --- | --- |
+| 주제 생성 | 생성 및 MySQL 저장·조회 | 제출 전 기록 필요: 빈 제목·선택지 |
+| 익명 투표 | 투표 및 DB 저장 확인 | 제출 전 기록 필요: 동일 브라우저 중복 투표 |
+| 결과 조회 | 득표수·비율 표시 | 제출 전 기록 필요: 투표 0건 |
+| 댓글 | 작성 및 DB 저장·조회 | 제출 전 기록 필요: 빈 댓글 |
+| S3 이미지 | 업로드·DB 객체 키 확인·새로고침 후 표시 | 제출 전 기록 필요: 잘못된 형식·크기 초과 |
 
-이번 구현에서 자동 테스트 5개 통과, 운영 의존성 보안 검사 취약점 0건을 확인했습니다.
+컨테이너 `web`·`api`·`db` 실행 상태, API `/api/health`의 `status: ok`, 사이트 외부 접속을 확인했습니다. 
 
-| 구분 | 확인 내용 | 결과 |
-|---|---|---|
-| 주제 | 생성·조회, 공백·최대 길이 초과, 잘못된 ID·없는 주제 | HTTP 테스트 통과 |
-| 투표·결과 | 결과 사전 조회 차단, 잘못된 선택, 재투표 거부, 브라우저 분리, 100%·50% 결과 | HTTP 테스트 통과 |
-| 댓글 | 작성·조회, 공백·1000자 초과 거부, HTML 문자열 보존 | HTTP 테스트 통과 |
-| 요청 보호 | 다른 사이트 요청·5MB 초과 첨부 거부 | HTTP 테스트 통과 |
-| 이미지 | 실제 PNG 디코딩·WebP 변환·로컬 저장·삭제, 위조 이미지 거부 | 실제 파일 테스트 통과 |
+**각 기능의 실패·경계 사례
+| 기능 | 시험 조건 | 실제 결과 |
+| 주제 생성	| 제목 미입력	| 등록 차단 및 입력 안내 | 
+| 익명 투표	| 동일 주제 중복 | 투표	중복 요청 거부 | 
+| 댓글 작성	| 빈 댓글 제출	| 댓글 등록 차단 | 
 
-HTTP 테스트는 DB 대역을 사용합니다. JavaScript 문법 검사와 EC2의 Docker Compose 설정 문법 검사도 통과했습니다(컨테이너는 기동하지 않음). **실제 MySQL 유일 제약·전체 Docker Compose 기동·브라우저 화면 시연·S3·EC2 웹 배포·부하 시험은 아직 검증하지 않았습니다.** 개발 PC에 Docker가 설치되어 있지 않아 전체 컨테이너 검증을 실행하지 못했습니다. DB 데이터와 EC2 기존 구성은 변경하지 않았습니다.
 
-## 전체 파일 구조
+## 5. 작업 기록 및 자원 관리
 
-`.env`, 설치 폴더 `node_modules`, 기존 `.venv`, `.git` 등은 소스 구조에서 제외합니다.
-
-```text
-vs-game/
-├── .env.example           # 비밀값 없는 환경 설정 예시
-├── .gitignore             # 비밀값·키·설치 파일 제외
-├── compose.yaml           # 웹·API·DB 연결, 볼륨, 헬스체크, 자원 상한
-├── README.md              # 실행·배포·운영·검증 안내
-├── database/
-│   ├── init.sql           # 기존 3개 테이블과 투표 유일 제약
-│   └── test.sql           # 기존 수동 DB 확인용 샘플 INSERT/SELECT
-├── backend/
-│   ├── package.json       # 서버 의존성과 실행·테스트 명령
-│   ├── package-lock.json  # 의존성 버전 고정
-│   ├── Dockerfile         # 일반 사용자로 API 컨테이너 실행
-│   ├── .dockerignore      # 빌드에서 설치 파일·업로드·테스트 제외
-│   ├── server.js          # MySQL 연결 풀과 서버 시작·종료
-│   ├── app.js             # 주제·투표·결과·댓글 API, 검증·요청 제한
-│   ├── storage.js         # 이미지 검증·변환, 로컬/S3 저장·조회
-│   ├── app.test.js        # API·쿠키·이미지 자동 테스트
-│   └── load-check.js      # 소규모 읽기 요청 부하 측정
-└── frontend/
-    ├── Dockerfile         # 정적 화면을 Nginx 이미지에 포함
-    ├── nginx.conf         # 정적 파일 제공과 API·이미지 프록시
-    ├── index.html         # 화면 골격과 주제 작성 폼
-    ├── style.css          # 반응형 화면 스타일
-    └── app.js             # 목록·상세·투표·댓글 API 연결
-```
-
-최종 제출 전: 실제 배포 URL, 정상·실패 시연 화면, S3 증빙, 부하 시험 수치, 백업 확인 결과를 추가하세요.
-
-구현 참고: [Express 오류 처리](https://expressjs.com/en/5x/guide/error-handling/), [AWS SDK S3 예제](https://docs.aws.amazon.com/sdk-for-javascript/v3/developer-guide/javascript_s3_code_examples.html).
+- **작업:** 서비스 구현, Docker 이미지 빌드·Compose 실행, MySQL 데이터 확인, EC2 배포, S3·IAM 연동, 기능 검증
+- **AI 활용:** ChatGPT를 활용해 코드 작성·설정·명령어 및 오류 해결을 보조받았으며, Docker·AWS 콘솔 작업과 서비스 실행 결과를 직접 확인함
+- **운영 확인:** `docker compose ps`, `docker compose logs --tail=50`, `docker stats --no-stream`
+- **제출:** [GitHub 저장소](https://github.com/hiallu60/vs-game), 실제 EC2 접속 주소, 작업 버전(커밋), 기능별 시험 결과 제시
+- **검사 후:** EC2·S3 등 불필요한 AWS 자원을 정리하고 GitHub 저장소와 README 보존
